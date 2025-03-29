@@ -4,6 +4,10 @@ wandb/
 
 # Data file
 *.csv
+subject_mapping.json
+
+# Env file
+.env
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -72,6 +72,16 @@ def load_fingpt_forecaster():
     
     return final_dataset
 
+def load_quant_trading_instruct():
+    dataset_name = "lumalik/Quant-Trading-Instruct"
+    ds = load_dataset(dataset_name)
+    selected_data = ds['train'].select_columns(['context', 'question', 'answer'])
+    selected_data = selected_data.map(lambda x: {'question': f"{x['context']}\n{x['question']}"})
+    selected_data = selected_data.add_column('dataset', [dataset_name] * len(selected_data))
+    selected_data = selected_data.add_column('question_type', ['Text'] * len(selected_data))
+    print(f"\nTotal number of examples: {len(selected_data)}")
+    return selected_data
+
 def load_frm_qa100():
     dataset_name = "KirkHan/FRM_QA100"
     ds = load_dataset(dataset_name)
