@@ -426,4 +426,4 @@ if __name__ == "__main__":
     # Drop duplicates in `ds` on "col1"
     # import pdb; pdb.set_trace()
     ds = ds.filter(partial(is_unique, column="question", memory=memory))
-    ds.push_to_hub("akftam/financial-qa-s1decontaminate-v1.0")
+    ds.push_to_hub(repo_id="akftam/financial-qa-s1decontaminate-v1.0")

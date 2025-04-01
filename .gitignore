@@ -1,7 +1,7 @@
 ckpts/
 
 wandb/
-
+results/
 # Data file
 *.csv
 subject_mapping.json
