@@ -377,12 +377,12 @@ if __name__ == "__main__":
         "chutesai/Mistral-Small-3.1-24B-Instruct-2503",
         # Skip not working, strange response: "Qwen/Qwen2.5-VL-32B-Instruct",
     ]
-    # for model in chute_models:
-    #     difficulty_classification(_chute_forward, model, upload=True)#, sample_size=10)
+    for model in chute_models:
+        difficulty_classification(_chute_forward, model, upload=True)#, sample_size=10)
     # # # Models for Nebius
     nebius_models = ["Qwen/Qwen2.5-32B-Instruct"]
     
-    # for model in nebius_models:
-    #     difficulty_classification(_nebius_forward, model, upload=True)#, sample_size=10)
+    for model in nebius_models:
+        difficulty_classification(_nebius_forward, model, upload=True)#, sample_size=10)
 
     analyze_and_filter_results(chute_models+nebius_models)
