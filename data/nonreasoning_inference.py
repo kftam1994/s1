@@ -16,6 +16,7 @@ import aiohttp
 import asyncio
 import json
 import re
+import glob
 # response = requests.get(
 #   url="https://openrouter.ai/api/v1/auth/key",
 #   headers={
@@ -243,9 +244,11 @@ def verify_answer(attempt: str, solution: str, question_type: str) -> bool:
         raise e
         return False
 
+def get_pretty_name(model_name: str) -> str:
+    return model_name.replace("/", "_").replace("-", "_").replace(".", "_").replace(":", "_")
 
 def difficulty_classification(forward_func, model_name: str, sample_size: int = None, upload: bool = False):
-    pretty_name = model_name.replace("/", "_").replace("-", "_").replace(".", "_").replace(":", "_")
+    pretty_name = get_pretty_name(model_name)
     output_dir = f"results/difficulty_classification/{pretty_name}"
     os.makedirs(output_dir, exist_ok=True)
     dataset = load_dataset("akftam/financial-qa-s1decontaminate-v1.0")['train']
@@ -293,22 +296,93 @@ def difficulty_classification(forward_func, model_name: str, sample_size: int = 
                 raise ValueError(f"Hash {qhash} not found in results")
             new_dataset_list.append(new_example)
         new_dataset = Dataset.from_list(new_dataset_list)
-        new_dataset.push_to_hub(repo_id=f"akftam/train_{pretty_name}_inference")
+        new_dataset.push_to_hub(repo_id=f"akftam/financial-qa-s1decontaminate-v1.0_{pretty_name}_inference")
+
+def analyze_and_filter_results(models: list[str]) -> None:
+    """
+    Analyze grading results and create filtered dataset of questions answered correctly by any model.
+    
+    """
+    # Initialize statistics dictionary
+    stats = {
+        'Choice': {'correct': 0, 'incorrect': 0},
+        'Numeric': {'correct': 0, 'incorrect': 0}
+    }
+    
+    # Track questions answered correctly by any model
+    correctly_answered = set()
+    question_results = {}  # Store all results for each question
+    
+    # Process each model's results
+    for model in models:
+        pretty_name = get_pretty_name(model)
+        results_dir = f"results/difficulty_classification/{pretty_name}/grading_input"
+        
+        print(f"\nAnalyzing results for {model}...")
+        model_stats = {
+            'Choice': {'correct': 0, 'incorrect': 0},
+            'Numeric': {'correct': 0, 'incorrect': 0}
+        }
+        
+        # Read all json files in the grading_input directory
+        for json_file in glob.glob(os.path.join(results_dir,"*.json")):
+            result = jload(json_file)
+            
+            # Update statistics
+            if result['is_correct']:
+                model_stats[result['question_type']]['correct'] += 1
+                correctly_answered.add(question_hash(result['question']))
+            else:
+                model_stats[result['question_type']]['incorrect'] += 1
+                
+            # Store result for this question
+            qhash = question_hash(result['question'])
+            if qhash not in question_results:
+                question_results[qhash] = result
+        
+        # Print model statistics
+        print(f"\nResults for {model}:")
+        for qtype in ['Choice', 'Numeric']:
+            total = model_stats[qtype]['correct'] + model_stats[qtype]['incorrect']
+            if total > 0:
+                accuracy = (model_stats[qtype]['correct'] / total) * 100
+                print(f"{qtype} questions: {model_stats[qtype]['correct']}/{total} "
+                      f"({accuracy:.2f}% accuracy)")
+    
+    # Create filtered dataset
+    print(f"Correctly answered questions by any model: {len(correctly_answered)}")
+    dataset = load_dataset("akftam/financial-qa-s1decontaminate-v1.0")['train']
+    filtered_examples = []
+    # Only keep those examples that were not answered correctly by any model
+    for example in dataset:
+        if question_hash(example['question']) not in correctly_answered:
+            filtered_examples.append(example)
+    
+
+    filtered_dataset = Dataset.from_list(filtered_examples)
+    print(f"\nOriginal dataset size: {len(dataset)}")
+    print(f"Output filtered dataset size: {len(filtered_examples)}")
+    print(f"Questions skipped/filtered out: {len(dataset) - len(filtered_examples)}")
+    assert len(dataset) - len(filtered_examples)==len(correctly_answered)
+    filtered_dataset.push_to_hub(repo_id="akftam/financial-qa-s1decontaminate-filtered-v1.0")
+    
 
 if __name__ == "__main__":
     #parser = HfArgumentParser(DataModuleConfigs)
     #args = parser.parse_args_into_dataclasses()[0]
 
     # Models available for free in Chutes ai
-    models = [
+    chute_models = [
         #"unsloth/gemma-3-12b-it",
         "chutesai/Mistral-Small-3.1-24B-Instruct-2503",
         # Skip not working, strange response: "Qwen/Qwen2.5-VL-32B-Instruct",
     ]
-    for model in models:
-        difficulty_classification(_chute_forward, model)#, sample_size=10)
-    # Models for Nebius
-    #models = ["Qwen/Qwen2.5-32B-Instruct"]
+    # for model in chute_models:
+    #     difficulty_classification(_chute_forward, model, upload=True)#, sample_size=10)
+    # # # Models for Nebius
+    nebius_models = ["Qwen/Qwen2.5-32B-Instruct"]
     
-    #for model in models:
-    #    difficulty_classification(_nebius_forward, model)#, sample_size=10)
+    # for model in nebius_models:
+    #     difficulty_classification(_nebius_forward, model, upload=True)#, sample_size=10)
+
+    analyze_and_filter_results(chute_models+nebius_models)
