@@ -194,7 +194,7 @@ async def _chute_forward(prompts: Sequence[str],
         return results
 
 
-def verify_answer(attempt: str, solution: str, question_type: str) -> bool:
+def verify_answer(attempt: str, solution: str, question_type: str, numeric_error_tolerance = 1e-6) -> bool:
     """
     Verify if the model's answer matches the solution based on question type.
     
@@ -229,7 +229,7 @@ def verify_answer(attempt: str, solution: str, question_type: str) -> bool:
                 model_num = float(model_answer)
                 solution_num = float(solution)
                 # Allow for small floating-point differences
-                return abs(model_num - solution_num) < 1e-6
+                return abs(model_num - solution_num) < numeric_error_tolerance
             except ValueError:
                 return False
                 
@@ -245,10 +245,12 @@ def verify_answer(attempt: str, solution: str, question_type: str) -> bool:
         return False
 
 def get_pretty_name(model_name: str) -> str:
-    return model_name.replace("/", "_").replace("-", "_").replace(".", "_").replace(":", "_")
+    pretty_name = model_name.replace("/", "-").replace(":", "-")
+    short_pretty_name = '-'.join(pretty_name.split("-")[0:2])
+    return pretty_name, short_pretty_name
 
 def difficulty_classification(forward_func, model_name: str, sample_size: int = None, upload: bool = False):
-    pretty_name = get_pretty_name(model_name)
+    pretty_name, short_pretty_name = get_pretty_name(model_name)
     output_dir = f"results/difficulty_classification/{pretty_name}"
     os.makedirs(output_dir, exist_ok=True)
     dataset = load_dataset("akftam/financial-qa-s1decontaminate-v1.0")['train']
@@ -296,18 +298,20 @@ def difficulty_classification(forward_func, model_name: str, sample_size: int = 
                 raise ValueError(f"Hash {qhash} not found in results")
             new_dataset_list.append(new_example)
         new_dataset = Dataset.from_list(new_dataset_list)
-        new_dataset.push_to_hub(repo_id=f"akftam/financial-qa-s1decontaminate-v1.0_{pretty_name}_inference")
+        new_dataset.push_to_hub(repo_id=f"akftam/financial-qa-s1decontaminate-v1.0_{short_pretty_name}_inference")
 
 def analyze_and_filter_results(models: list[str]) -> None:
     """
     Analyze grading results and create filtered dataset of questions answered correctly by any model.
-    
+    Track statistics by question type and dataset source.
     """
-    # Initialize statistics dictionary
-    stats = {
-        'Choice': {'correct': 0, 'incorrect': 0},
-        'Numeric': {'correct': 0, 'incorrect': 0}
-    }
+    # Load original dataset to get source information
+    original_dataset = load_dataset("akftam/financial-qa-s1decontaminate-v1.0")['train']
+    dataset_lookup = {question_hash(ex['question']): ex['dataset'] for ex in original_dataset}
+    
+    # Initialize statistics dictionaries
+    model_stats = {}
+    dataset_stats = {}
     
     # Track questions answered correctly by any model
     correctly_answered = set()
@@ -315,54 +319,101 @@ def analyze_and_filter_results(models: list[str]) -> None:
     
     # Process each model's results
     for model in models:
-        pretty_name = get_pretty_name(model)
+        pretty_name,short_pretty_name = get_pretty_name(model)
         results_dir = f"results/difficulty_classification/{pretty_name}/grading_input"
         
         print(f"\nAnalyzing results for {model}...")
-        model_stats = {
+        # Initialize stats for this model
+        model_stats[model] = {
             'Choice': {'correct': 0, 'incorrect': 0},
-            'Numeric': {'correct': 0, 'incorrect': 0}
+            'Numeric': {'correct': 0, 'incorrect': 0},
+            'by_dataset': {}
         }
         
         # Read all json files in the grading_input directory
-        for json_file in glob.glob(os.path.join(results_dir,"*.json")):
+        for json_file in glob.glob(os.path.join(results_dir, "*.json")):
             result = jload(json_file)
+            qhash = question_hash(result['question'])
+            
+            # Get dataset source from lookup
+            dataset_source = dataset_lookup.get(qhash, 'unknown')
+            
+            # Initialize dataset stats if needed
+            if dataset_source not in dataset_stats:
+                dataset_stats[dataset_source] = {
+                    'Choice': {'correct': 0, 'incorrect': 0},
+                    'Numeric': {'correct': 0, 'incorrect': 0}
+                }
+            if dataset_source not in model_stats[model]['by_dataset']:
+                model_stats[model]['by_dataset'][dataset_source] = {
+                    'Choice': {'correct': 0, 'incorrect': 0},
+                    'Numeric': {'correct': 0, 'incorrect': 0}
+                }
             
             # Update statistics
             if result['is_correct']:
-                model_stats[result['question_type']]['correct'] += 1
-                correctly_answered.add(question_hash(result['question']))
+                model_stats[model][result['question_type']]['correct'] += 1
+                model_stats[model]['by_dataset'][dataset_source][result['question_type']]['correct'] += 1
+                dataset_stats[dataset_source][result['question_type']]['correct'] += 1
+                correctly_answered.add(qhash)
             else:
-                model_stats[result['question_type']]['incorrect'] += 1
-                
+                model_stats[model][result['question_type']]['incorrect'] += 1
+                model_stats[model]['by_dataset'][dataset_source][result['question_type']]['incorrect'] += 1
+                dataset_stats[dataset_source][result['question_type']]['incorrect'] += 1
+            
             # Store result for this question
-            qhash = question_hash(result['question'])
             if qhash not in question_results:
                 question_results[qhash] = result
         
         # Print model statistics
         print(f"\nResults for {model}:")
         for qtype in ['Choice', 'Numeric']:
-            total = model_stats[qtype]['correct'] + model_stats[qtype]['incorrect']
+            total = model_stats[model][qtype]['correct'] + model_stats[model][qtype]['incorrect']
             if total > 0:
-                accuracy = (model_stats[qtype]['correct'] / total) * 100
-                print(f"{qtype} questions: {model_stats[qtype]['correct']}/{total} "
+                accuracy = (model_stats[model][qtype]['correct'] / total) * 100
+                print(f"{qtype} questions: {model_stats[model][qtype]['correct']}/{total} "
                       f"({accuracy:.2f}% accuracy)")
+        
+        # Print dataset-specific statistics for this model
+        print("\nBreakdown by dataset:")
+        for dataset_source in model_stats[model]['by_dataset']:
+            print(f"\n{dataset_source}:")
+            for qtype in ['Choice', 'Numeric']:
+                stats = model_stats[model]['by_dataset'][dataset_source][qtype]
+                total = stats['correct'] + stats['incorrect']
+                if total > 0:
+                    accuracy = (stats['correct'] / total) * 100
+                    print(f"  {qtype}: {stats['correct']}/{total} ({accuracy:.2f}% accuracy)")
+    
+    # Print overall dataset statistics
+    print("\nOverall statistics by dataset:")
+    for dataset_source, stats in dataset_stats.items():
+        print(f"\n{dataset_source}:")
+        for qtype in ['Choice', 'Numeric']:
+            total = stats[qtype]['correct'] + stats[qtype]['incorrect']
+            if total > 0:
+                accuracy = (stats[qtype]['correct'] / total) * 100
+                print(f"  {qtype}: {stats[qtype]['correct']}/{total} ({accuracy:.2f}% accuracy)")
     
     # Create filtered dataset
-    print(f"Correctly answered questions by any model: {len(correctly_answered)}")
+    print(f"\nCorrectly answered questions by any model: {len(correctly_answered)}")
     dataset = load_dataset("akftam/financial-qa-s1decontaminate-v1.0")['train']
-    filtered_examples = []
-    # Only keep those examples that were not answered correctly by any model
-    for example in dataset:
-        if question_hash(example['question']) not in correctly_answered:
-            filtered_examples.append(example)
+    filtered_examples = [ex for ex in dataset if question_hash(ex['question']) not in correctly_answered]
     
-
     filtered_dataset = Dataset.from_list(filtered_examples)
     print(f"\nOriginal dataset size: {len(dataset)}")
     print(f"Output filtered dataset size: {len(filtered_examples)}")
-    print(f"Questions skipped/filtered out: {len(dataset) - len(filtered_examples)}")
+    print(f"Questions filtered out: {len(dataset) - len(filtered_examples)}")
+    
+    # Save statistics to file
+    stats_output = {
+        'model_stats': model_stats,
+        'dataset_stats': dataset_stats,
+        'total_questions': len(dataset),
+        'filtered_questions': len(filtered_examples),
+        'correctly_answered': len(correctly_answered)
+    }
+    jdump(stats_output, "results/analysis_dataset_stats.json")
     assert len(dataset) - len(filtered_examples)==len(correctly_answered)
     filtered_dataset.push_to_hub(repo_id="akftam/financial-qa-s1decontaminate-filtered-v1.0")
     
