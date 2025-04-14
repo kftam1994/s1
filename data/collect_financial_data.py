@@ -152,7 +152,21 @@ def load_finai_flare():
                                 "TheFinAI/flare-ma","TheFinAI/flare-cfa"]:
                 split_data = split_data.add_column('question_type', ['Choice'] * len(split_data))
             elif dataset_name in ["TheFinAI/flare-convfinqa","ChanceFocus/flare-finqa"]:
-                split_data = split_data.add_column('question_type', ['Numeric'] * len(split_data))
+                #split_data = split_data.add_column('question_type', ['Numeric'] * len(split_data))
+                def determine_question_type(example):
+                    # Get the first answer since answers are in list format
+                    answer = example['answer'][0].lower() if example['answer'] else ''
+                    # Check if answer is yes/no
+                    if answer in ['yes', 'no']:
+                        return 'Choice'
+                    # Try to convert to float to check if numeric
+                    try:
+                        float(answer.replace(',', ''))  # Remove commas for numbers like "1,234.56"
+                        return 'Numeric'
+                    except ValueError:
+                        return 'Text'  # Fallback for non-numeric, non-yes/no answers
+                
+                split_data = split_data.map(lambda x: {'question_type': determine_question_type(x)})
 
             split_datasets.append(split_data)
         
